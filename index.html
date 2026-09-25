@@ -11,7 +11,7 @@
     --muted: #3b6b4e;
     --line: #c2dec9;
     --bg: #eef7f0;
-    --card: #F4D8CC;
+    --card: #edcadc;
     --accent: #198754;
     --accent-hover: #146c43;
     --ok: #137a45;
@@ -122,7 +122,7 @@
       </select>
 
       <div class="pill wait" id="locPill">
-        <span class="dot"></span><span id="locText">Refining GPS location…</span>
+        <span class="dot"></span><span id="locText">Finding your location…</span>
       </div>
       <button class="link" id="retryLoc" type="button" hidden>Retry Location</button>
 
@@ -134,7 +134,7 @@
 </div>
 
 <script>
-const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxnr3b6Xd7C4u275SQpnXwqw1cL54t05DbRoR-m7LL3LElHgvoQ_zJTWULyPduSJ_en6g/exec";
+const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxKG6idn096__OcYIu7NsHXAMF8Sv7VqQEnPzigr19dXhkLzLQScp17gj9yKJW75PkFHw/exec";
 
 const params  = new URLSearchParams(location.search);
 const sheetId = params.get("sheetId");
@@ -195,11 +195,17 @@ function startTeacher() {
     try {
       const url = `${APPS_SCRIPT_URL}?action=create&sheetId=${encodeURIComponent(id)}&start=${start}&end=${end}`;
       const r = await fetch(url, { redirect: "follow" });
-      const res = await r.json();
+      const rawText = await r.text();
+
+      let res;
+      try {
+        res = JSON.parse(rawText);
+      } catch (jsonErr) {
+        throw new Error("Could not parse response from server. Check script permissions.");
+      }
 
       if (res.status === "error") throw new Error(res.message);
 
-      // Save/update sheet metadata in local library
       const library = getSavedSheets();
       const existingIdx = library.findIndex(item => item.id === id);
       const sheetData = {
@@ -272,9 +278,7 @@ function renderSavedSheets() {
 
 function selectSavedSheet(id) {
   const item = getSavedSheets().find(s => s.id === id);
-  if (item) {
-    displayQR(item);
-  }
+  if (item) displayQR(item);
 }
 
 function displayQR(item) {
@@ -333,8 +337,7 @@ function updateSubmitState() {
   $("submitBtn").disabled = !(fix && sessionOpen);
 }
 
-// GPS Refinement via watchPosition
-// GPS Refinement with Instant Unlock Fallback
+// GPS Refinement via watchPosition + cached instant unlock
 function startLocation() {
   if (!navigator.geolocation) {
     setPill("bad", "Geolocation is not supported by your browser.");
@@ -346,7 +349,7 @@ function startLocation() {
 
   if (watchId !== null) navigator.geolocation.clearWatch(watchId);
 
-  // Fallback: If indoors and takes longer than 6 seconds, accept best available reading
+  // Fallback: If indoors and takes longer than 6 seconds, accept best available fix
   const fallbackTimer = setTimeout(() => {
     if (fix) {
       setPill("ok", "Location ready");
@@ -366,17 +369,15 @@ function startLocation() {
         acc: pos.coords.accuracy
       };
 
-      // Always save the best reading
       if (!fix || candidate.acc <= fix.acc) {
         fix = candidate;
       }
 
-      // Unlock button immediately once ANY valid coordinates arrive
       setPill("ok", "Location ready");
       updateSubmitState();
 
-      // If accuracy reaches a good indoor fix (<= 150m), stop listening
-      if (fix.acc <= 150) {
+      // If accuracy reaches realistic indoor precision (<= 65m), stop listening
+      if (fix.acc <= 65) {
         clearTimeout(fallbackTimer);
         navigator.geolocation.clearWatch(watchId);
         watchId = null;
@@ -384,16 +385,12 @@ function startLocation() {
     },
     err => {
       if (!fix) {
-        setPill("bad", "Location access needed. Turn on GPS and allow browser access.");
+        setPill("bad", "Location access needed. Turn on GPS and allow access.");
         $("retryLoc").hidden = false;
         updateSubmitState();
       }
     },
-    { 
-      enableHighAccuracy: true, 
-      timeout: 10000, 
-      maximumAge: 60000 // Accept recent cached position so it resolves in 1-2 seconds
-    }
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
   );
 }
 
@@ -476,7 +473,9 @@ function startStudent() {
         $("form").hidden = true;
       } else {
         showMsg(res.message, "bad");
-        if (!["duplicate", "duplicate_device", "expired", "not_started"].includes(res.status)) {
+        // Keep button disabled if rejected permanently (duplicate, expired, or out of campus)
+        const finalStatuses = ["duplicate", "duplicate_device", "expired", "not_started", "outside_geofence"];
+        if (!finalStatuses.includes(res.status)) {
           btn.disabled = false;
         }
       }
