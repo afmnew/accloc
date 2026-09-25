@@ -334,16 +334,29 @@ function updateSubmitState() {
 }
 
 // GPS Refinement via watchPosition
+// GPS Refinement with Instant Unlock Fallback
 function startLocation() {
   if (!navigator.geolocation) {
     setPill("bad", "Geolocation is not supported by your browser.");
     return;
   }
 
-  setPill("wait", "Refining GPS location…");
+  setPill("wait", "Acquiring GPS location…");
   $("retryLoc").hidden = true;
 
   if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+
+  // Fallback: If indoors and takes longer than 6 seconds, accept best available reading
+  const fallbackTimer = setTimeout(() => {
+    if (fix) {
+      setPill("ok", "Location ready");
+      updateSubmitState();
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+      }
+    }
+  }, 6000);
 
   watchId = navigator.geolocation.watchPosition(
     pos => {
@@ -353,26 +366,34 @@ function startLocation() {
         acc: pos.coords.accuracy
       };
 
+      // Always save the best reading
       if (!fix || candidate.acc <= fix.acc) {
         fix = candidate;
       }
 
+      // Unlock button immediately once ANY valid coordinates arrive
       setPill("ok", "Location ready");
       updateSubmitState();
 
-      if (fix.acc <= 35) {
+      // If accuracy reaches a good indoor fix (<= 150m), stop listening
+      if (fix.acc <= 150) {
+        clearTimeout(fallbackTimer);
         navigator.geolocation.clearWatch(watchId);
         watchId = null;
       }
     },
     err => {
       if (!fix) {
-        setPill("bad", "Location access needed. Turn on GPS and allow access.");
+        setPill("bad", "Location access needed. Turn on GPS and allow browser access.");
         $("retryLoc").hidden = false;
         updateSubmitState();
       }
     },
-    { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+    { 
+      enableHighAccuracy: true, 
+      timeout: 10000, 
+      maximumAge: 60000 // Accept recent cached position so it resolves in 1-2 seconds
+    }
   );
 }
 
